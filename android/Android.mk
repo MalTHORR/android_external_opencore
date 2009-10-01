@@ -27,7 +27,8 @@ LOCAL_C_INCLUDES := $(PV_INCLUDES) \
     include/graphics \
     external/skia/include/corecg \
     $(call include-path-for, graphics corecg) \
-    external/tremolo/Tremolo
+    external/tremolo/Tremolo \
+    external/flac/include
 
 LOCAL_MODULE := libandroidpv
 
