@@ -12,4 +12,5 @@ LOCAL_SHARED_LIBRARIES :=	libutils \
 							liblog \
 							libicuuc \
 							libcamera_client \
-							libsurfaceflinger_client
+							libsurfaceflinger_client \
+							libFLAC
