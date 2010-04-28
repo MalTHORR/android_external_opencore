@@ -49,10 +49,6 @@
 #include "pvmf_mempool.h"
 #endif
 
-#ifndef PVMF_FIXEDSIZE_BUFFER_ALLOC_H_INCLUDED
-#include "pvmf_fixedsize_buffer_alloc.h"
-#endif
-
 #ifndef PVMF_SIMPLE_MEDIA_BUFFER_H_INCLUDED
 #include "pvmf_simple_media_buffer.h"
 #endif
@@ -1411,8 +1407,7 @@ class PVMFOMXEncNode
         OMX_TICKS ConvertTimestampIntoOMXTicks(const MediaClockConverter &src);
         uint32 ConvertOMXTicksIntoTimestamp(const OMX_TICKS &src);
 
-        PVInterface* ipExternalInputBufferAllocatorInterface;
-        PVMFFixedSizeBufferAlloc* ipFixedSizeBufferAlloc;
+
 
 #ifdef _TEST_AE_ERROR_HANDLING
         bool   iErrorHandlingInit;

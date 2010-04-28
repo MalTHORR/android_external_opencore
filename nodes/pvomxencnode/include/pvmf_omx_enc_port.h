@@ -81,8 +81,6 @@ class PVMFOMXEncPort : public PvmfPortBaseImpl
         }
 
         bool pvmiSetPortFormatSpecificInfoSync(OsclRefCounterMemFrag& aMemFrag);
-        bool pvmiGetBufferAllocatorSpecificInfoSync(PvmiKeyType aIdentifier, PvmiKvp*& aParameters, int& aNumParamElements);
-        bool releaseParametersSync(PvmiKvp*& aParameters, int& aNumParamElements);
 
         PVMFStatus Connect(PVMFPortInterface* aPort);
         void setParametersSync(PvmiMIOSession aSession,
