@@ -59,11 +59,7 @@ AndroidAudioInput::AndroidAudioInput(uint32 audioSource)
     iState(STATE_IDLE),
     iMaxAmplitude(0),
     iTrackMaxAmplitude(false),
-    iAudioThreadStarted(false),
-    iAuthorClock(NULL),
-    iClockNotificationsInf(NULL),
-    iFirstFrameReceived(false),
-    iFirstFrameTs(0)
+    iAudioThreadStarted(false)
 {
     LOGV("AndroidAudioInput constructor %p", this);
     // semaphore used to communicate between this  mio and the audio output thread
@@ -760,32 +756,13 @@ void AndroidAudioInput::Run()
         }
     }
 
-    if ((iState == STATE_STARTED) && (iStartCmd.iType == AI_CMD_START)) {
-        // This means Audio MIO is waiting for
-        // first audio frame to be received
-        if (iFirstFrameReceived) {
-            // Set the clock with iFirstFrameTs
-            if (iAuthorClock) {
-                 bool tmpbool = false;
-                 iAuthorClock->SetStartTime32((uint32&)iFirstFrameTs, PVMF_MEDIA_CLOCK_MSEC, tmpbool);
-            }
-
-            LOGV("First frame received, Complete the start");
-            // First frame is received now complete Start
-            DoRequestCompleted(iStartCmd, PVMFSuccess);
-
-            // Set the iStartCmd type to be invalid now
-            iStartCmd.iType = AI_INVALID_CMD;
-         }
-    }
-
     if(!iCmdQueue.empty())
     {
         // Run again if there are more things to process
         RunIfNotReady();
     }
 
-    if((iState == STATE_STARTED) && (iFirstFrameReceived))
+    if(iState == STATE_STARTED)
     {
         SendMicData();
     }
@@ -825,12 +802,6 @@ void AndroidAudioInput::AddDataEventToQueue(uint32 aMicroSecondsToEvent)
 void AndroidAudioInput::DoRequestCompleted(const AndroidAudioInputCmd& aCmd, PVMFStatus aStatus, OsclAny* aEventData)
 {
     LOGV("DoRequestCompleted(%d, %d) this %p", aCmd.iId, aStatus, this);
-    if ((aStatus == PVMFPending) && (aCmd.iType == AI_CMD_START)) {
-        LOGV("Start is pending, Return here, wait for success or failure");
-        // Copy the command
-        iStartCmd = aCmd;
-        return;
-    }
     PVMFCmdResp response(aCmd.iId, aCmd.iContext, aStatus, aEventData);
 
     for(uint32 i = 0; i < iObservers.size(); i++)
@@ -873,17 +844,6 @@ PVMFStatus AndroidAudioInput::DoStart()
 {
     LOGV("DoStart");
 
-    // Set the clock state observer
-    if (iAuthorClock) {
-        iAuthorClock->ConstructMediaClockNotificationsInterface(iClockNotificationsInf, *this);
-
-        if (iClockNotificationsInf == NULL) {
-             return PVMFErrNoMemory;
-        }
-
-        iClockNotificationsInf->SetClockStateObserver(*this);
-    }
-
     iAudioThreadStartLock->lock();
     iAudioThreadStarted = false;
 
@@ -912,18 +872,6 @@ PVMFStatus AndroidAudioInput::DoStart()
     iState = STATE_STARTED;
 
     AddDataEventToQueue(0);
-
-    // Hold back onto Start until the first audio frame is received by
-    // the audio thread.
-    // We want to hold back the start until first audio frame since
-    // recording time origin will start with the first audio sample.
-    // First audio sample will serve as the reference for audio and video
-    // frames timestamps in msecs.
-    if (!iFirstFrameReceived) {
-        LOGV("First Frame not received, hold back the start");
-        return PVMFPending;
-    }
-
     return PVMFSuccess;
 }
 
@@ -948,12 +896,8 @@ PVMFStatus AndroidAudioInput::DoPause()
 PVMFStatus AndroidAudioInput::DoReset()
 {
     LOGV("DoReset");
-    // Remove and destroy the clock state observer
-    RemoveDestroyClockStateObs();
     iExitAudioThread = true;
     iDataEventCounter = 0;
-    iFirstFrameReceived = false;
-    iFirstFrameTs = 0;
     if(iAudioThreadStarted ){
     iAudioThreadSem->Signal();
     iAudioThreadTermSem->Wait();
@@ -996,14 +940,8 @@ PVMFStatus AndroidAudioInput::DoFlush()
 PVMFStatus AndroidAudioInput::DoStop()
 {
     LOGV("DoStop");
-
-    // Remove and destroy the clock state observer
-    RemoveDestroyClockStateObs();
-
     iExitAudioThread = true;
     iDataEventCounter = 0;
-    iFirstFrameReceived = false;
-    iFirstFrameTs = 0;
     iState = STATE_STOPPED;
     if(iAudioThreadStarted ){
     iAudioThreadSem->Signal();
@@ -1178,34 +1116,6 @@ int AndroidAudioInput::audin_thread_func() {
             if (numOfBytes <= 0)
                 break;
 
-            if (iFirstFrameReceived == false) {
-                iFirstFrameReceived = true;
-
-                // Get the AudioRecord latency and
-                // get the system clock at this point
-                // The difference in 2 will give the actual time
-                // of first audio capture.
-                uint32 systime = (uint32) (systemTime() / 1000000L);
-                uint32 recordLatency = 0;
-
-                // Get the latency now
-                size_t kernelBufferSize = 0;
-                status_t ret = AudioSystem::getInputBufferSize(iAudioSamplingRate,
-                                                               AudioSystem::PCM_16_BIT,
-                                                               iAudioNumChannels, &kernelBufferSize);
-
-                if (ret == NO_ERROR) {
-                    uint32 readBufferFrames = kBufferSize/2/iAudioNumChannels;
-                    uint32 kernelFrames = kernelBufferSize/2/iAudioNumChannels;
-                    recordLatency  = ((readBufferFrames - 1)/kernelFrames + 1) * (kernelFrames*1000)/iAudioSamplingRate;
-                } else {
-                    LOGE("AudioSystem::getInputBufferSize returned error");
-                }
-
-                iFirstFrameTs = systime - recordLatency;
-                LOGV("First Audio Frame received systime %d, recordLatency %d, iFirstFrameTs %d", systime, recordLatency, iFirstFrameTs);
-            }
-
             if (numFramesRecorded < kAutoRampStartFrames) {
                 // Start with silence...
                 memset(data, 0, numOfBytes);
@@ -1279,7 +1189,6 @@ void AndroidAudioInput::SendMicData(void)
         return;
     }
     MicData &data = iWriteResponseQueue[0];
-
     // send data to Peer & store the id
     PvmiMediaXferHeader data_hdr;
     data_hdr.seq_num=iDataEventCounter-1;
@@ -1368,16 +1277,6 @@ PVMFStatus AndroidAudioInput::VerifyAndSetParameter(PvmiKvp* aKvp, bool aSetPara
             return PVMFFailure;
         }
     }
-    else if (pv_mime_strcmp(aKvp->key, PVMF_AUTHORING_CLOCK_KEY) == 0)
-    {
-        LOGV("AndroidAudioInput::VerifyAndSetParameter() PVMF_AUTHORING_CLOCK_KEY value %p", aKvp->value.key_specific_value);
-        if( (NULL == aKvp->value.key_specific_value) && ( iAuthorClock ) )
-        {
-            RemoveDestroyClockStateObs();
-        }
-        iAuthorClock = (PVMFMediaClock*) aKvp->value.key_specific_value;
-        return PVMFSuccess;
-    }
 
     LOGE("unsupported parameter: %s", aKvp->key);
     return PVMFFailure;
@@ -1394,30 +1293,3 @@ int AndroidAudioInput::maxAmplitude()
     iMaxAmplitude = 0;
     return result;
 }
-
-void AndroidAudioInput::NotificationsInterfaceDestroyed()
-{
-    iClockNotificationsInf = NULL;
-}
-
-void AndroidAudioInput::ClockStateUpdated()
-{
-    PVMFMediaClock::PVMFMediaClockState iClockState = iAuthorClock->GetState();
-    uint32 currentTime = 0;
-    bool tmpbool = false;
-    iAuthorClock->GetCurrentTime32(currentTime, tmpbool, PVMF_MEDIA_CLOCK_MSEC);
-    LOGV("ClockStateUpdated State %d Current clock value %d", iClockState, currentTime);
-}
-
-void AndroidAudioInput::RemoveDestroyClockStateObs()
-{
-    if (iAuthorClock != NULL) {
-        if (iClockNotificationsInf != NULL) {
-            iClockNotificationsInf->RemoveClockStateObserver(*this);
-            iAuthorClock->DestroyMediaClockNotificationsInterface(iClockNotificationsInf);
-            iClockNotificationsInf = NULL;
-        }
-    }
-}
-
-

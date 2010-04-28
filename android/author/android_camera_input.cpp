@@ -40,16 +40,14 @@ OSCL_DLL_ENTRY_POINT_DEFAULT()
 // camera MIO
 AndroidCameraInput::AndroidCameraInput()
     : OsclTimerObject(OsclActiveObject::EPriorityNominal, "AndroidCameraInput"),
-    iWriteState(EWriteOK),
-    iAuthorClock(NULL),
-    iClockNotificationsInf(NULL),
-    iAudioFirstFrameTs(0)
+    iWriteState(EWriteOK)
 {
     LOGV("constructor(%p)", this);
     iCmdIdCounter = 0;
     iPeer = NULL;
     iThreadLoggedOn = false;
     iDataEventCounter = 0;
+    iStartTickCount = 0;
     iTimeStamp = 0;
     iMilliSecondsPerDataEvent = 0;
     iMicroSecondsPerDataEvent = 0;
@@ -905,18 +903,6 @@ PVMFStatus AndroidCameraInput::DoInit()
 PVMFStatus AndroidCameraInput::DoStart()
 {
     LOGV("DoStart");
-
-    // Set the clock state observer
-    if (iAuthorClock) {
-        iAuthorClock->ConstructMediaClockNotificationsInterface(iClockNotificationsInf, *this);
-
-        if (iClockNotificationsInf == NULL) {
-             return PVMFErrNoMemory;
-        }
-
-        iClockNotificationsInf->SetClockStateObserver(*this);
-    }
-
     PVMFStatus status = PVMFFailure;
     iWriteState = EWriteOK;
     if (mCamera == NULL) {
@@ -932,6 +918,7 @@ PVMFStatus AndroidCameraInput::DoStart()
             status = PVMFSuccess;
         }
     }
+    iStartTickCount = (uint32) (systemTime() / 1000000L);
     AddDataEventToQueue(iMilliSecondsPerDataEvent);
     return status;
 }
@@ -947,10 +934,7 @@ PVMFStatus AndroidCameraInput::DoPause()
 PVMFStatus AndroidCameraInput::DoReset()
 {
     LOGV("DoReset");
-    // Remove and destroy the clock state observer
-    RemoveDestroyClockObs();
     iDataEventCounter = 0;
-    iAudioFirstFrameTs = 0;
     iWriteState = EWriteOK;
     if ( (iState == STATE_STARTED) || (iState == STATE_PAUSED) ) {
     if (mCamera != NULL) {
@@ -983,12 +967,7 @@ PVMFStatus AndroidCameraInput::DoFlush(const AndroidCameraInputCmd& aCmd)
 PVMFStatus AndroidCameraInput::DoStop(const AndroidCameraInputCmd& aCmd)
 {
     LOGV("DoStop");
-
-    // Remove and destroy the clock state observer
-    RemoveDestroyClockObs();
-
     iDataEventCounter = 0;
-    iAudioFirstFrameTs = 0;
     iWriteState = EWriteOK;
     if (mCamera != NULL) {
     mCamera->setListener(NULL);
@@ -1061,16 +1040,6 @@ PVMFStatus AndroidCameraInput::VerifyAndSetParameter(PvmiKvp* aKvp,
             return PVMFFailure;
         }
     }
-    else if (pv_mime_strcmp(aKvp->key, PVMF_AUTHORING_CLOCK_KEY) == 0)
-    {
-        LOGV("AndroidCameraInput::VerifyAndSetParameter() PVMF_AUTHORING_CLOCK_KEY value %p", aKvp->value.key_specific_value);
-        if( (NULL == aKvp->value.key_specific_value) && ( iAuthorClock ) )
-        {
-            RemoveDestroyClockObs();
-        }
-        iAuthorClock = (PVMFMediaClock*)aKvp->value.key_specific_value;
-        return PVMFSuccess;
-    }
 
     LOGE("Unsupported parameter(%s)", aKvp->key);
     return PVMFFailure;
@@ -1120,43 +1089,19 @@ PVMFStatus AndroidCameraInput::postWriteAsync(nsecs_t timestamp, const sp<IMemor
         return PVMFFailure;
     }
 
-    if((!iPeer) || (!isRecorderStarting()) || (iWriteState == EWriteBusy) || (NULL == iAuthorClock) || (iAuthorClock->GetState() != PVMFMediaClock::RUNNING)) {
-        if( NULL == iAuthorClock )
-        {
-            LOGE("Recording is not ready (iPeer %p iState %d iWriteState %d iAuthorClock NULL), frame dropped", iPeer, iState, iWriteState);
-        }
-        else
-        {
-            LOGE("Recording is not ready (iPeer %p iState %d iWriteState %d iClockState %d), frame dropped", iPeer, iState, iWriteState, iAuthorClock->GetState());
-        }
+    if((!iPeer) || (!isRecorderStarting()) || (iWriteState == EWriteBusy)) {
+        LOGV("Recording is not ready (iPeer %p iState %d iWriteState %d), frame dropped", iPeer, iState, iWriteState);
         mCamera->releaseRecordingFrame(frame);
         return PVMFSuccess;
     }
 
-    // Now compare the video timestamp with the AudioFirstTimestamp
-    // if video timestamp is earlier to audio drop it
-    // or else send it downstream with correct timestamp
-    uint32 ts = (uint32)(timestamp / 1000000L);
-
-    // In cases of Video Only recording iAudioFirstFrameTs will always be zero,
-    // so for such cases assign iAudioFirstFrameTs to Video's first sample TS
-    // which will make Video samples to start with Timestamp zero.
-    if (iAudioFirstFrameTs == 0)
-        iAudioFirstFrameTs = ts;
-
-    if (ts < iAudioFirstFrameTs) {
-        // Drop the frame
-        mCamera->releaseRecordingFrame(frame);
-        return PVMFSuccess;
-    } else {
-         // calculate timestamp as offset from start time
-         ts -= iAudioFirstFrameTs;
-    }
+    // calculate timestamp as offset from start time
+    uint32 t = (uint32)(timestamp / 1000000L) - iStartTickCount;
 
     // Make sure that no two samples have the same timestamp
     if (iDataEventCounter != 0) {
-        if (iTimeStamp != ts) {
-            iTimeStamp = ts;
+        if (iTimeStamp != t) {
+            iTimeStamp = t;
         } else {
             ++iTimeStamp;
         }
@@ -1198,34 +1143,4 @@ void AndroidCameraInputListener::postDataTimestamp(nsecs_t timestamp, int32_t ms
         mCameraInput->postWriteAsync(timestamp, dataPtr);
     }
 }
-
-void AndroidCameraInput::NotificationsInterfaceDestroyed()
-{
-    iClockNotificationsInf = NULL;
-}
-
-void AndroidCameraInput::ClockStateUpdated()
-{
-    PVMFMediaClock::PVMFMediaClockState iClockState = iAuthorClock->GetState();
-    if ((iClockState == PVMFMediaClock::RUNNING) && (iAudioFirstFrameTs == 0)) {
-        // Get the clock time here
-        // this will be the time of first audio frame capture
-        bool tmpbool = false;
-        iAuthorClock->GetCurrentTime32(iAudioFirstFrameTs, tmpbool, PVMF_MEDIA_CLOCK_MSEC);
-        LOGV("Audio first ts %d", iAudioFirstFrameTs);
-    }
-}
-
-void AndroidCameraInput::RemoveDestroyClockObs()
-{
-    if (iAuthorClock != NULL) {
-        if (iClockNotificationsInf != NULL) {
-            iClockNotificationsInf->RemoveClockStateObserver(*this);
-            iAuthorClock->DestroyMediaClockNotificationsInterface(iClockNotificationsInf);
-            iClockNotificationsInf = NULL;
-        }
-    }
-}
-
-
 
