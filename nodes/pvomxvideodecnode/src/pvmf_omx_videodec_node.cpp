@@ -33,10 +33,6 @@
 #include "pv_omxcore.h"
 #include "OMX_Video.h"
 
-#include "utils/Log.h"
-#undef LOG_TAG
-#define LOG_TAG "PVOMXVidDecNode"
-
 #define CONFIG_SIZE_AND_VERSION(param) \
         param.nSize=sizeof(param); \
         param.nVersion.s.nVersionMajor = SPECVERSIONMAJOR; \
@@ -1370,7 +1366,6 @@ OMX_ERRORTYPE PVMFOMXVideoDecNode::EventHandlerProcessing(OMX_OUT OMX_HANDLETYPE
         case OMX_EventError:
         {
 
-            LOGE("Ln %d OMX_EventError nData1 %d nData2 %d", __LINE__, aData1, aData2);
             if (aData1 == (OMX_U32) OMX_ErrorStreamCorrupt)
             {
                 PVLOGGER_LOGMSG(PVLOGMSG_INST_LLDBG, iLogger, PVLOGMSG_ERR,
