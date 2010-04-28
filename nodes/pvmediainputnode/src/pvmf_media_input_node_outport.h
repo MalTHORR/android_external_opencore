@@ -185,6 +185,7 @@ class PvmfMediaInputNodeOutPort : public OsclTimerObject,
         //logging
         OSCL_HeapString<OsclMemAllocator> iMimeType;
         PVLogger* iDataPathLogger;
+        PVMFBufferPoolAllocator iPrivateDataFsiFragmentAlloc;
 };
 
 #endif // PVMF_MEDIA_INPUT_NODE_INPORT_H_INCLUDED
